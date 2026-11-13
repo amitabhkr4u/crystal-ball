@@ -1,0 +1,97 @@
+name: CI
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env: { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: crystal_ball }
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 10s
+          --health-timeout 5s --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+        working-directory: backend
+      - run: npm run build && npm run prisma:validate && npm run prisma:generate && npm run prisma:migrate
+        working-directory: backend
+        env: { DATABASE_URL: postgresql://postgres:postgres@localhost:5432/crystal_ball }
+      - run: psql "$DATABASE_URL" -f prisma/rls-policies.sql
+        working-directory: backend
+        env: { DATABASE_URL: postgresql://postgres:postgres@localhost:5432/crystal_ball }
+      - run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE cb_app LOGIN PASSWORD 'ci-only-password' NOSUPERUSER NOBYPASSRLS;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "GRANT CONNECT ON DATABASE crystal_ball TO cb_app; GRANT USAGE ON SCHEMA public TO cb_app; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cb_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cb_app;"
+        working-directory: backend
+        env: { DATABASE_URL: postgresql://postgres:postgres@localhost:5432/crystal_ball }
+      - run: npm run test:coverage
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql://cb_app:ci-only-password@localhost:5432/crystal_ball
+          RUN_POSTGRES_INTEGRATION: 'true'
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20 }
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run verify && npm run contract:test && npm run build
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - run: npm run e2e
+        working-directory: frontend
+        env: { CI: true }
+
+  sonar:
+    if: ${{ vars.SONAR_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: SonarSource/sonarqube-scan-action@v5
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  docker-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate Compose configuration
+        run: |
+          cp .env.example .env
+          cp backend/.env.example backend/.env
+          cp ops/metrics_token.example ops/metrics_token
+          docker compose config --quiet
+      - uses: docker/setup-buildx-action@v3
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: crystal-ball-backend:ci
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: false
+          build-args: |
+            API_URL=http://api:4000
+          tags: crystal-ball-frontend:ci

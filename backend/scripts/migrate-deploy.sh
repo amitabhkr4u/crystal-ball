@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+: "${OWNER_DATABASE_URL:?OWNER_DATABASE_URL is required for migrations}"
+: "${DATABASE_URL:?DATABASE_URL for the application role is required}"
+if ! psql "$OWNER_DATABASE_URL" -tAc "SELECT 1 FROM pg_roles WHERE rolname='cb_app'" | grep -q 1; then
+  psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE ROLE cb_app LOGIN PASSWORD '${APP_DB_PASSWORD:?APP_DB_PASSWORD is required}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;"
+fi
+psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE cb_app WITH PASSWORD '${APP_DB_PASSWORD}';"
+export DATABASE_URL="$OWNER_DATABASE_URL"
+npm run prisma:migrate
+psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -c 'GRANT CONNECT ON DATABASE crystal_ball TO cb_app; GRANT USAGE ON SCHEMA public TO cb_app; GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO cb_app; GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO cb_app; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO cb_app; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO cb_app;'
+psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/rls-policies.sql
+psql "$OWNER_DATABASE_URL" -v ON_ERROR_STOP=1 -f prisma/vector-search.sql
+if [ -n "${SEED_ADMIN_PASSWORD:-}" ]; then npm run db:seed; fi

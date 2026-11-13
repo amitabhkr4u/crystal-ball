@@ -1,0 +1,31 @@
+groups:
+  - name: crystal-ball-api
+    rules:
+      - alert: CrystalBallApiUnavailable
+        expr: up{job="crystal-ball-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: Crystal Ball API metrics endpoint is unavailable
+      - alert: CrystalBallLlmFallbackRateHigh
+        expr: |
+          sum(rate(crystal_ball_llm_requests_total{outcome="fallback"}[10m]))
+          /
+          clamp_min(sum(rate(crystal_ball_llm_requests_total[10m])), 0.001) > 0.25
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 25 percent of LLM calls are falling back
+      - alert: CrystalBallLlmSpendRateHigh
+        expr: increase(crystal_ball_llm_cost_usd_total[1h]) > 5
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: Estimated LLM spend exceeded 5 USD in the last hour
+
+      - alert: CrystalBallSensorAnomaliesDetected
+        expr: increase(crystal_ball_sensor_anomalies_total[5m]) >= 3
+        for: 2m
+        labels: { severity: warning }
+        annotations:
+          summary: Multiple sensor anomalies detected in the last five minutes

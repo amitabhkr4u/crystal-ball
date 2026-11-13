@@ -1,0 +1,7 @@
+
+# Deployment secrets
+.env
+backend/.env
+ops/metrics_token
+*.pem
+frontend/.env.local
